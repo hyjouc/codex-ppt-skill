@@ -2,9 +2,10 @@
 """Fallback CLI for codex-ppt image generation or editing with GPT Image models.
 
 Used when Codex's built-in image tool is unavailable, when the user explicitly
-opts into API mode, or needs output controls exposed by the API.
+opts into API mode, or when explicit transparent output requires the
+`gpt-image-1.5` fallback path.
 
-Defaults to gpt-image-2.5-flare and a structured prompt augmentation workflow.
+Defaults to gpt-image-2 and a structured prompt augmentation workflow.
 Reads OPENAI_API_KEY, and optionally OPENAI_BASE_URL for provider adapters or
 OpenAI-compatible proxy providers.
 """
@@ -27,7 +28,7 @@ from urllib.parse import urlparse
 from image_providers import create_image_provider
 from image_providers.atlascloud import atlascloud_model_for_operation
 
-DEFAULT_MODEL = "gpt-image-2.5-flare"
+DEFAULT_MODEL = "gpt-image-2"
 DEFAULT_SIZE = "2560x1440"
 DEFAULT_QUALITY = "medium"
 DEFAULT_OUTPUT_FORMAT = "png"
@@ -37,10 +38,11 @@ DEFAULT_OUTPUT_PATH = "output/imagegen/output.png"
 GPT_IMAGE_MODEL_PREFIX = "gpt-image-"
 
 ALLOWED_LEGACY_SIZES = {"1024x1024", "1536x1024", "1024x1536", "auto"}
-ALLOWED_QUALITIES = {"low", "medium", "high", "xhigh", "max", "auto"}
+ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
 ALLOWED_BACKGROUNDS = {"transparent", "opaque", "auto", None}
 ALLOWED_INPUT_FIDELITIES = {"low", "high", None}
 
+GPT_IMAGE_2_MODEL = "gpt-image-2"
 GPT_IMAGE_2_MIN_PIXELS = 655_360
 GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
@@ -235,19 +237,19 @@ def _validate_gpt_image_2_size(size: str) -> None:
     total_pixels = width * height
 
     if max_edge > GPT_IMAGE_2_MAX_EDGE:
-        _die("GPT Image 2 / 2.5 / 2.6 size maximum edge length must be less than or equal to 3840px.")
+        _die("gpt-image-2 size maximum edge length must be less than or equal to 3840px.")
     if width % 16 != 0 or height % 16 != 0:
-        _die("GPT Image 2 / 2.5 / 2.6 size width and height must be multiples of 16px.")
+        _die("gpt-image-2 size width and height must be multiples of 16px.")
     if max_edge / min_edge > GPT_IMAGE_2_MAX_RATIO:
-        _die("GPT Image 2 / 2.5 / 2.6 size long edge to short edge ratio must not exceed 3:1.")
+        _die("gpt-image-2 size long edge to short edge ratio must not exceed 3:1.")
     if total_pixels < GPT_IMAGE_2_MIN_PIXELS or total_pixels > GPT_IMAGE_2_MAX_PIXELS:
         _die(
-            "GPT Image 2 / 2.5 / 2.6 size total pixels must be at least 655,360 and no more than 8,294,400."
+            "gpt-image-2 size total pixels must be at least 655,360 and no more than 8,294,400."
         )
 
 
 def _validate_size(size: str, model: str) -> None:
-    if _is_gpt_image_2_model(model) or _is_gpt_image_2_5_or_2_6_model(model):
+    if _is_gpt_image_2_model(model):
         _validate_gpt_image_2_size(size)
         return
 
@@ -257,11 +259,9 @@ def _validate_size(size: str, model: str) -> None:
         )
 
 
-def _validate_quality(quality: str, model: str) -> None:
+def _validate_quality(quality: str) -> None:
     if quality not in ALLOWED_QUALITIES:
-        _die("quality must be one of low, medium, high, xhigh, max, or auto.")
-    if quality in {"xhigh", "max"} and not _is_gpt_image_2_5_or_2_6_model(model):
-        _die("xhigh and max quality require GPT Image 2.5 or 2.6 (Flare or Sunburst).")
+        _die("quality must be one of low, medium, high, or auto.")
 
 
 def _validate_background(background: Optional[str]) -> None:
@@ -278,20 +278,13 @@ def _validate_model(model: str) -> None:
     if GPT_IMAGE_MODEL_PREFIX not in model:
         _die(
             "model must be a GPT Image model name containing 'gpt-image-' "
-            "(for example gpt-image-2.5-flare, gpt-image-2.5-sunburst, gpt-image-2, "
+            "(for example gpt-image-2, openai/gpt-image-2, gpt-image-1.5, "
             "gpt-image-1, or gpt-image-1-mini)."
         )
 
 
 def _is_gpt_image_2_model(model: str) -> bool:
-    return bool(re.search(r"(?:^|/)gpt-image-2(?:-\d{4}-\d{2}-\d{2})?(?:/|$)", model))
-
-
-def _is_gpt_image_2_5_or_2_6_model(model: str) -> bool:
-    return bool(re.search(
-        r"(?:^|/)gpt-image-2\.(?:5|6)-(?:flare|sunburst)(?:-\d{4}-\d{2}-\d{2})?(?:/|$)",
-        model,
-    ))
+    return GPT_IMAGE_2_MODEL in model
 
 
 def _validate_transparency(background: Optional[str], output_format: str) -> None:
@@ -309,8 +302,8 @@ def _validate_model_specific_options(
         return
     if background == "transparent":
         _die(
-            "transparent backgrounds are not supported in gpt-image-2. "
-            "Use --model gpt-image-2.5-flare --background transparent --output-format png instead."
+            "transparent backgrounds are not supported in gpt-image-2, the latest model. "
+            "Use --model gpt-image-1.5 --background transparent --output-format png instead."
         )
     if input_fidelity is not None:
         _die(
@@ -328,7 +321,7 @@ def _validate_generate_payload(payload: Dict[str, Any]) -> None:
     quality = str(payload.get("quality", DEFAULT_QUALITY))
     background = payload.get("background")
     _validate_size(size, model)
-    _validate_quality(quality, model)
+    _validate_quality(quality)
     _validate_background(background)
     _validate_model_specific_options(model=model, background=background)
     oc = payload.get("output_compression")
@@ -955,7 +948,7 @@ def main() -> int:
 
     _validate_model(args.model)
     _validate_size(args.size, args.model)
-    _validate_quality(args.quality, args.model)
+    _validate_quality(args.quality)
     _validate_background(args.background)
     _validate_model_specific_options(
         model=args.model,
